@@ -66,6 +66,12 @@ func RemoveImage(ctx context.Context, imageName string) error {
 	if registry == "" {
 		return errors.New("invalid empty registry")
 	}
+	if region, ok := isECRRegistry(registry); ok {
+		// ECR uses Basic auth and lacks reliable Distribution v2 manifest
+		// deletion; delete through the AWS API instead. image already holds
+		// the full repository path.
+		return removeECRImage(ctx, region, image, tag)
+	}
 	r := &dockerRegistry{registry: registry}
 	err := r.registryAuth(ctx, imageName)
 	if err != nil {
