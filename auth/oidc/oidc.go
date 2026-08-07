@@ -9,7 +9,6 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,25 +62,12 @@ type oidcScheme struct {
 	autoCreatePersonalTeam bool
 }
 
-var invalidTeamNameChars = regexp.MustCompile(`[^a-z0-9_-]`)
-
 func personalTeamName(email string) string {
 	name := email
 	if idx := strings.Index(email, "@"); idx >= 0 {
 		name = email[:idx]
 	}
-	return slugifyTeamName(name)
-}
-
-func slugifyTeamName(s string) string {
-	s = invalidTeamNameChars.ReplaceAllString(strings.ToLower(s), "-")
-	if s == "" || s[0] < 'a' || s[0] > 'z' {
-		s = "u-" + s
-	}
-	if len(s) > 63 {
-		s = s[:63]
-	}
-	return strings.TrimRight(s, "-_")
+	return auth.NormalizeTeamName(name)
 }
 
 // createPersonalTeam gives a freshly registered user a team of their own so
@@ -96,7 +82,7 @@ func (s *oidcScheme) createPersonalTeam(ctx context.Context, user *auth.User) {
 	name := personalTeamName(user.Email)
 	err = servicemanager.Team.Create(ctx, name, []string{"personal"}, authUser)
 	if err == authTypes.ErrTeamAlreadyExists {
-		name = slugifyTeamName(user.Email)
+		name = auth.NormalizeTeamName(user.Email)
 		err = servicemanager.Team.Create(ctx, name, []string{"personal"}, authUser)
 	}
 	if err != nil {
