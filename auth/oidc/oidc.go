@@ -9,6 +9,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"github.com/tsuru/tsuru/auth"
 	internalConfig "github.com/tsuru/tsuru/config"
 	"github.com/tsuru/tsuru/log"
+	"github.com/tsuru/tsuru/servicemanager"
 	"github.com/tsuru/tsuru/set"
 	authTypes "github.com/tsuru/tsuru/types/auth"
 )
@@ -52,12 +54,54 @@ func init() {
 }
 
 type oidcScheme struct {
-	jwksURL             string
-	cache               *jwk.Cache
-	validClaims         map[string]interface{}
-	initialized         sync.Once
-	registrationEnabled bool
-	groupsInClaims      bool
+	jwksURL                string
+	cache                  *jwk.Cache
+	validClaims            map[string]interface{}
+	initialized            sync.Once
+	registrationEnabled    bool
+	groupsInClaims         bool
+	autoCreatePersonalTeam bool
+}
+
+var invalidTeamNameChars = regexp.MustCompile(`[^a-z0-9_-]`)
+
+func personalTeamName(email string) string {
+	name := email
+	if idx := strings.Index(email, "@"); idx >= 0 {
+		name = email[:idx]
+	}
+	return slugifyTeamName(name)
+}
+
+func slugifyTeamName(s string) string {
+	s = invalidTeamNameChars.ReplaceAllString(strings.ToLower(s), "-")
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		s = "u-" + s
+	}
+	if len(s) > 63 {
+		s = s[:63]
+	}
+	return strings.TrimRight(s, "-_")
+}
+
+// createPersonalTeam gives a freshly registered user a team of their own so
+// they can create apps without any manual role setup. Best effort: failures
+// are logged and never block the login.
+func (s *oidcScheme) createPersonalTeam(ctx context.Context, user *auth.User) {
+	authUser, err := auth.ConvertOldUser(user, nil)
+	if err != nil {
+		log.Errorf("unable to create personal team for %q: %v", user.Email, err)
+		return
+	}
+	name := personalTeamName(user.Email)
+	err = servicemanager.Team.Create(ctx, name, []string{"personal"}, authUser)
+	if err == authTypes.ErrTeamAlreadyExists {
+		name = slugifyTeamName(user.Email)
+		err = servicemanager.Team.Create(ctx, name, []string{"personal"}, authUser)
+	}
+	if err != nil {
+		log.Errorf("unable to create personal team %q for %q: %v", name, user.Email, err)
+	}
 }
 
 func (s *oidcScheme) Auth(ctx context.Context, token string) (auth.Token, error) {
@@ -104,6 +148,9 @@ func (s *oidcScheme) Auth(ctx context.Context, token string) (auth.Token, error)
 			err = user.Create(ctx)
 			if err != nil {
 				return nil, err
+			}
+			if s.autoCreatePersonalTeam {
+				s.createPersonalTeam(ctx, user)
 			}
 		} else {
 			return nil, err
@@ -181,6 +228,7 @@ func (s *oidcScheme) lazyInitialize(ctx context.Context) error {
 
 		s.registrationEnabled, _ = config.GetBool("auth:user-registration")
 		s.groupsInClaims, _ = config.GetBool("auth:oidc:groups-in-claims")
+		s.autoCreatePersonalTeam, _ = config.GetBool("auth:oidc:auto-create-personal-team")
 
 		s.validClaims = map[string]interface{}{}
 		internalConfig.UnmarshalConfig("auth:oidc:valid-claims", &s.validClaims)
