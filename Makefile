@@ -9,18 +9,55 @@ PLATFORMS_DIR = /tmp/platforms
 TSR_SRC       = ./cmd/tsurud
 GIT_TAG_VER   := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "$${TSURU_BUILD_VERSION:-dev}")
 
-# Keep in sync with the golangci-lint-action version in .github/workflows/ci.yaml.
-GOLANGCI_LINT_VERSION ?= v2.11.4
+# Everything except ./integration, which needs a live cluster.
+PKGS = $(shell go list ./... | grep -v "github.com/tsuru/tsuru/integration")
 
-ifeq (, $(shell go env GOBIN))
-GOBIN := $(shell go env GOPATH)/bin
-else
-GOBIN := $(shell go env GOBIN)
-endif
+# Keep GOLANGCI_LINT_VERSION in sync with .github/workflows/ci.yaml.
+GOLANGCI_LINT_VERSION ?= v2.11.4
+YAMLFMT_VERSION       ?= v0.9.0
+SWAGGER_VERSION       ?= v0.30.3
+API_DOCS_VERSION      ?= v0.0.1
+
+# Version-keyed paths so the pinned version runs regardless of what is on PATH.
+TOOLS_DIR     := $(abspath $(BUILD_DIR)/tools)
+GOLANGCI_LINT  = $(TOOLS_DIR)/golangci-lint-$(GOLANGCI_LINT_VERSION)/golangci-lint
+YAMLFMT        = $(TOOLS_DIR)/yamlfmt-$(YAMLFMT_VERSION)/yamlfmt
+SWAGGER        = $(TOOLS_DIR)/swagger-$(SWAGGER_VERSION)/swagger
+API_DOCS       = $(TOOLS_DIR)/tsuru-api-docs-$(API_DOCS_VERSION)/tsuru-api-docs
+
+$(GOLANGCI_LINT):
+	GOBIN=$(dir $@) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+$(YAMLFMT):
+	GOBIN=$(dir $@) go install github.com/google/yamlfmt/cmd/yamlfmt@$(YAMLFMT_VERSION)
+
+$(SWAGGER):
+	GOBIN=$(dir $@) go install github.com/go-swagger/go-swagger/cmd/swagger@$(SWAGGER_VERSION)
+
+$(API_DOCS):
+	GOBIN=$(dir $@) go install github.com/tsuru/tsuru-api-docs@$(API_DOCS_VERSION)
+
+.PHONY: install-gotooling
+install-gotooling: $(GOLANGCI_LINT) $(YAMLFMT) $(SWAGGER) $(API_DOCS) ## Install every pinned tool into build/tools
+
+.PHONY: tools-clean
+tools-clean: ## Remove the installed tools so the next run reinstalls them
+	rm -rf $(TOOLS_DIR)
+
+.DELETE_ON_ERROR:
+
+.PHONY: help
+help: ## Show this help
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} \
+		/^[a-zA-Z_0-9.$$/-]+:.*?##/ { printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2 } \
+		/^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) }' $(MAKEFILE_LIST)
+	@echo ""
 
 .PHONY: all test race docs install tsurud $(TSR_BIN)
 
-all: test
+##@ Test
+
+all: test ## Alias for `make test`
 
 _go_test:
 	go clean ./...
@@ -33,41 +70,69 @@ _tsurud_dry:
 	./tsurud api --dry --config ./etc/tsuru.conf
 	rm -f tsurud
 
-test: _go_test _tsurud_dry
+test: _go_test _tsurud_dry ## Run the unit tests, then a tsurud config check
 
-lint: metalint yamllint
+test-pkg: ## Test one package: PKG=./api [CHECK=<gocheck regex>] [RUN=<go test regex>]
+	@test -n "$(PKG)" || { echo "usage: make test-pkg PKG=./api [CHECK=Name] [RUN=Name]"; exit 1; }
+	go test -count=1 $(if $(or $(CHECK),$(RUN)),-v) $(PKG) \
+		$(if $(CHECK),-check.v -check.f "$(CHECK)") \
+		$(if $(RUN),-run "$(RUN)")
+
+race: ## Run the unit tests under the race detector (what CI runs)
+	go clean -testcache
+	go test -race $(PKGS)
+
+##@ Lint
+
+lint: metalint yamllint ## Run every linter
 	misc/check-contributors.sh
 
-metalint:
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	$(GOBIN)/golangci-lint run --timeout=10m ./...
+vet: ## Run go vet
+	go vet $(PKGS)
 
-yamlfmt: ## Format your code with yamlfmt
-ifeq (, $(shell which yamlfmt))
-	go install github.com/google/yamlfmt/cmd/yamlfmt@v0.9.0
-endif
-	yamlfmt .
+.PHONY: ci-checks
+ci-checks: vet check-handlers check-events check-contributors check-api-doc validate-api-spec ## Run the scripted CI gates in one shot
 
-yamllint: ## Check the yaml is valid and correctly formatted
-ifeq (, $(shell which yamlfmt))
-	go install github.com/google/yamlfmt/cmd/yamlfmt@v0.9.0
-endif
+.PHONY: check-handlers check-events check-contributors
+check-handlers: ## Every API handler must call permission.Check
+	./misc/check-handlers.sh
+
+check-events: ## Every non-GET handler must create an event
+	./misc/check-events.sh
+
+check-contributors: ## New authors must be listed in CONTRIBUTORS
+	./misc/check-contributors.sh
+
+metalint: $(GOLANGCI_LINT) ## Run golangci-lint
+	$(GOLANGCI_LINT) run --timeout=10m ./...
+
+yamlfmt: $(YAMLFMT) ## Format the yaml files
+	$(YAMLFMT) .
+
+yamllint: $(YAMLFMT) ## Check the yaml is valid and correctly formatted
 	@echo "yamlfmt --quiet --lint ."
-	@yamlfmt --quiet --lint . \
+	@$(YAMLFMT) --quiet --lint . \
 		|| ( echo "Please run 'make yamlfmt' to fix it (if a format error)" && exit 1 )
 
-race:
-	go clean -testcache
-	go test -race `go list ./... | grep -v  github.com/tsuru/tsuru/integration`
+##@ Modernize
 
-_install_api_doc:
-	@go install github.com/tsuru/tsuru-api-docs@v0.0.1
+.PHONY: fix fix-diff
+fix: ## Apply the Go modernizer fixes in place, then check the tree still builds
+	go fix $(PKGS)
+	go vet $(PKGS)
 
-api-doc: _install_api_doc
-	@tsuru-api-docs | grep -v missing > docs/handlers.yml
+fix-diff: ## Show the Go modernizer fixes as a diff, without applying them
+	go fix -diff $(PKGS)
 
-check-api-doc: _install_api_doc
-	@exit $$(tsuru-api-docs | grep missing | wc -l)
+##@ Docs
+
+api-doc: $(API_DOCS) ## Regenerate docs/handlers.yml
+	@$(API_DOCS) | grep -v missing > docs/handlers.yml
+
+check-api-doc: $(API_DOCS) ## Fail if any handler is undocumented
+	@exit $$($(API_DOCS) | grep missing | wc -l)
+
+##@ Build
 
 release:
 	@if [ ! $(version) ]; then \
@@ -88,7 +153,7 @@ release:
 	@$(SED) -i 's/const Version = ".*"/const Version = "$(version)"/' api/server.go
 	@$(SED) -i 's/version: ".*"/version: "$(MINOR)"/' docs/reference/api.yaml
 
-install:
+install: ## Install all binaries
 	go install ./...
 
 serve: run-tsurud-api
@@ -97,7 +162,7 @@ run: run-tsurud-api
 
 binaries: tsurud
 
-tsurud: $(TSR_BIN)
+tsurud: $(TSR_BIN) ## Build tsurud into build/
 
 $(TSR_BIN):
 	CGO_ENABLED=0 go build -trimpath -ldflags '-s -w -X github.com/tsuru/tsuru/api.GitHash=$(shell git rev-parse HEAD) -X github.com/tsuru/tsuru/api.Version=$(GIT_TAG_VER)' -o $(TSR_BIN) $(TSR_SRC)
@@ -109,7 +174,7 @@ run-tsurud-token: $(TSR_BIN)
 	$(TSR_BIN) token
 
 .PHONY: validate-api-spec
-validate-api-spec: install-swagger
+validate-api-spec: $(SWAGGER) ## Validate the OpenAPI spec
 	$(SWAGGER) validate ./docs/reference/api.yaml
 
 test-ci-integration:
@@ -276,13 +341,7 @@ local.cleanup: local.stop
 
 
 .PHONY: install-swagger
-install-swagger:
-ifeq (, $(shell command -v swagger))
-	@{ go install github.com/go-swagger/go-swagger/cmd/swagger@v0.30.3; }
-SWAGGER=$(GOBIN)/swagger
-else
-SWAGGER=$(shell command -v swagger)
-endif
+install-swagger: $(SWAGGER) ## Install the pinned swagger binary
 
 
 PROTOC ?= protoc
