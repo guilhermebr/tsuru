@@ -96,7 +96,7 @@ func (s *PlatformImageStorage) Append(ctx context.Context, name string, version 
 	span.SetQueryStatement(query)
 	defer span.Finish()
 
-	result, err := collection.UpdateOne(ctx, query, mongoBSON.M{"$push": mongoBSON.M{"versions.$.images": mongoBSON.M{"$each": images}}})
+	result, err := collection.UpdateOne(ctx, query, mongoBSON.M{"$addToSet": mongoBSON.M{"versions.$.images": mongoBSON.M{"$each": images}}})
 	if err != nil {
 		span.SetError(err)
 		return err
@@ -115,6 +115,29 @@ func (s *PlatformImageStorage) Append(ctx context.Context, name string, version 
 		}
 	}
 
+	return nil
+}
+
+func (s *PlatformImageStorage) SetContainerfile(ctx context.Context, name string, version int, containerfile string) error {
+	query := mongoBSON.M{"name": name, "versions.version": version}
+
+	collection, err := storagev2.PlatformImagesCollection()
+	if err != nil {
+		return err
+	}
+
+	span := newMongoDBSpan(ctx, mongoSpanUpdate, collection.Name())
+	span.SetQueryStatement(query)
+	defer span.Finish()
+
+	result, err := collection.UpdateOne(ctx, query, mongoBSON.M{"$set": mongoBSON.M{"versions.$.containerfile": containerfile}})
+	if err != nil {
+		span.SetError(err)
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return image.ErrPlatformImageNotFound
+	}
 	return nil
 }
 

@@ -7,6 +7,7 @@ package image
 import (
 	"context"
 	"errors"
+	"strings"
 )
 
 type PlatformImage struct {
@@ -16,8 +17,22 @@ type PlatformImage struct {
 }
 
 type RegistryVersion struct {
-	Version int
-	Images  []string
+	Version       int
+	Images        []string
+	Containerfile string `bson:",omitempty"`
+}
+
+// ImageForRegistry returns the version's image pushed to reg, if any.
+func (v RegistryVersion) ImageForRegistry(reg ImageRegistry) (string, bool) {
+	if reg == EmptyImageRegistry {
+		return "", false
+	}
+	for _, img := range v.Images {
+		if strings.HasPrefix(img, string(reg)+"/") {
+			return img, true
+		}
+	}
+	return "", false
 }
 
 type ImageRegistry string
@@ -39,6 +54,7 @@ type PlatformImageStorage interface {
 	Upsert(context.Context, string) (*PlatformImage, error)
 	FindByName(context.Context, string) (*PlatformImage, error)
 	Append(context.Context, string, int, []string) error
+	SetContainerfile(context.Context, string, int, string) error
 	Delete(context.Context, string) error
 }
 

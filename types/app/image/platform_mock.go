@@ -13,10 +13,11 @@ var (
 
 // MockPlatformStorage implements PlatformStorage interface
 type MockPlatformImageStorage struct {
-	OnUpsert     func(string) (*PlatformImage, error)
-	OnFindByName func(string) (*PlatformImage, error)
-	OnAppend     func(string, int, []string) error
-	OnDelete     func(string) error
+	OnUpsert           func(string) (*PlatformImage, error)
+	OnFindByName       func(string) (*PlatformImage, error)
+	OnAppend           func(string, int, []string) error
+	OnSetContainerfile func(string, int, string) error
+	OnDelete           func(string) error
 }
 
 func (m *MockPlatformImageStorage) Upsert(ctx context.Context, name string) (*PlatformImage, error) {
@@ -29,6 +30,13 @@ func (m *MockPlatformImageStorage) FindByName(ctx context.Context, name string) 
 
 func (m *MockPlatformImageStorage) Append(ctx context.Context, name string, version int, images []string) error {
 	return m.OnAppend(name, version, images)
+}
+
+func (m *MockPlatformImageStorage) SetContainerfile(ctx context.Context, name string, version int, containerfile string) error {
+	if m.OnSetContainerfile == nil {
+		return nil
+	}
+	return m.OnSetContainerfile(name, version, containerfile)
 }
 
 func (m *MockPlatformImageStorage) Delete(ctx context.Context, name string) error {
