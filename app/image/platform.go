@@ -7,7 +7,6 @@ package image
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -145,12 +144,7 @@ func (s *platformImageService) FindImage(ctx context.Context, reg imageTypes.Ima
 	if err != nil {
 		return "", err
 	}
-	_, img, tag := ParseImageParts(image)
-	if tag == "" {
-		tag = img
-	}
-
-	wantedVersion, _ := strconv.Atoi(strings.TrimPrefix(tag, "v"))
+	wantedVersion := platformVersionFromTag(image)
 	var foundVersion *imageTypes.RegistryVersion
 	for _, version := range imgData.Versions {
 		if version.Version == wantedVersion {

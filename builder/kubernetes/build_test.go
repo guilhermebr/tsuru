@@ -1692,3 +1692,237 @@ func (f *fakeBuildServer) Build(req *buildpb.BuildRequest, stream buildpb.Build_
 
 	return f.OnBuild(req, stream)
 }
+
+// platformAwareBuildServer answers platform builds and app builds, counting the
+// former and checking the app build starts from wantSource.
+func platformAwareBuildServer(c *check.C, platformBuilds *[]*buildpb.BuildRequest, wantSource string) *fakeBuildServer {
+	return &fakeBuildServer{
+		OnBuild: func(req *buildpb.BuildRequest, stream buildpb.Build_BuildServer) error {
+			if req.GetKind() == buildpb.BuildKind_BUILD_KIND_PLATFORM_WITH_CONTAINER_FILE {
+				*platformBuilds = append(*platformBuilds, req)
+				return nil
+			}
+			c.Check(req.GetSourceImage(), check.Equals, wantSource)
+			return stream.Send(&buildpb.BuildResponse{Data: &buildpb.BuildResponse_TsuruConfig{
+				TsuruConfig: &buildpb.TsuruConfig{Procfile: "web: ./app"},
+			}})
+		},
+	}
+}
+
+func (s *S) deployForPlatformTest(c *check.C, a *appTypes.App) (string, error) {
+	return s.deployForPlatformTestWithOpts(c, a, builder.BuildOpts{})
+}
+
+// deployForPlatformTestWithOpts is deployForPlatformTest with room for extra
+// BuildOpts fields (e.g. Dockerfile) layered onto the default source-upload deploy.
+func (s *S) deployForPlatformTestWithOpts(c *check.C, a *appTypes.App, extra builder.BuildOpts) (string, error) {
+	evt, err := event.New(context.TODO(), &event.Opts{
+		Target:  eventTypes.Target{Type: eventTypes.TargetTypeApp, Value: a.Name},
+		Kind:    permission.PermAppDeploy,
+		Owner:   s.token,
+		Allowed: event.Allowed(permission.PermAppDeploy),
+	})
+	c.Assert(err, check.IsNil)
+	data := bytes.NewBufferString("my source")
+	var output bytes.Buffer
+	opts := builder.BuildOpts{
+		ArchiveFile: data,
+		ArchiveSize: int64(data.Len()),
+		Output:      &output,
+		Dockerfile:  extra.Dockerfile,
+	}
+	_, err = s.b.Build(context.TODO(), a, evt, opts)
+	return output.String(), err
+}
+
+func (s *S) mockPlatformImages(c *check.C, version imagetypes.RegistryVersion, appended *[]string) {
+	s.mockService.PlatformImage.OnFindVersion = func(platform string, v int) (*imagetypes.RegistryVersion, error) {
+		c.Check(platform, check.Equals, "python")
+		return &version, nil
+	}
+	s.mockService.PlatformImage.OnNewImage = func(reg imagetypes.ImageRegistry, platform string, v int) (string, error) {
+		return fmt.Sprintf("%s/tsuru/%s:v%d", reg, platform, v), nil
+	}
+	s.mockService.PlatformImage.OnAppendImages = func(platform string, v int, images []string) error {
+		c.Check(platform, check.Equals, "python")
+		c.Check(v, check.Equals, version.Version)
+		*appended = images
+		return nil
+	}
+	s.mockService.PlatformImage.OnCurrentImage = func(reg imagetypes.ImageRegistry, platform string) (string, error) {
+		return "node.registry:5000/tsuru/python:v8", nil
+	}
+	s.mockService.PlatformImage.OnFindImage = func(reg imagetypes.ImageRegistry, platform, image string) (string, error) {
+		return "node.registry:5000/tsuru/python:" + image, nil
+	}
+}
+
+func (s *S) TestBuild_BuildsMissingPlatformImageIntoCluster(c *check.C) {
+	a, _, rollback := s.mock.DefaultReactions(c)
+	defer rollback()
+	a.Deploys = 0
+
+	var appended []string
+	s.mockPlatformImages(c, imagetypes.RegistryVersion{
+		Version:       8,
+		Images:        []string{"home.registry:5000/tsuru/python:v8"},
+		Containerfile: "FROM tsuru/python:latest",
+	}, &appended)
+
+	var platformBuilds []*buildpb.BuildRequest
+	s.clusterClient.CustomData[buildServiceAddressKey] = setupBuildServer(s.t, platformAwareBuildServer(c, &platformBuilds, "node.registry:5000/tsuru/python:v8"))
+	s.clusterClient.CustomData[registryKey] = "node.registry:5000"
+
+	output, err := s.deployForPlatformTest(c, a)
+	c.Assert(err, check.IsNil)
+	c.Assert(platformBuilds, check.HasLen, 1)
+	c.Assert(platformBuilds[0].GetContainerfile(), check.Equals, "FROM tsuru/python:latest")
+	c.Assert(platformBuilds[0].GetDestinationImages(), check.DeepEquals, []string{"node.registry:5000/tsuru/python:v8", "node.registry:5000/tsuru/python:latest"})
+	c.Assert(appended, check.DeepEquals, []string{"node.registry:5000/tsuru/python:v8", "node.registry:5000/tsuru/python:latest"})
+	c.Assert(output, check.Matches, "(?s).*---- Building platform python v8 on cluster c1 ----.*")
+}
+
+func (s *S) TestBuild_PinnedPlatformVersionBuildsWithoutLatestTag(c *check.C) {
+	a, _, rollback := s.mock.DefaultReactions(c)
+	defer rollback()
+	a.Deploys = 0
+	a.PlatformVersion = "v7"
+
+	var appended []string
+	s.mockPlatformImages(c, imagetypes.RegistryVersion{
+		Version:       7,
+		Images:        []string{"home.registry:5000/tsuru/python:v7"},
+		Containerfile: "FROM tsuru/python:3.13",
+	}, &appended)
+	var requested []int
+	findVersion := s.mockService.PlatformImage.OnFindVersion
+	s.mockService.PlatformImage.OnFindVersion = func(platform string, v int) (*imagetypes.RegistryVersion, error) {
+		requested = append(requested, v)
+		return findVersion(platform, v)
+	}
+
+	var platformBuilds []*buildpb.BuildRequest
+	s.clusterClient.CustomData[buildServiceAddressKey] = setupBuildServer(s.t, platformAwareBuildServer(c, &platformBuilds, "node.registry:5000/tsuru/python:v7"))
+	s.clusterClient.CustomData[registryKey] = "node.registry:5000"
+
+	_, err := s.deployForPlatformTest(c, a)
+	c.Assert(err, check.IsNil)
+	c.Assert(requested, check.DeepEquals, []int{7})
+	c.Assert(platformBuilds, check.HasLen, 1)
+	c.Assert(platformBuilds[0].GetDestinationImages(), check.DeepEquals, []string{"node.registry:5000/tsuru/python:v7"})
+	c.Assert(appended, check.DeepEquals, []string{"node.registry:5000/tsuru/python:v7"})
+}
+
+func (s *S) TestBuild_SkipsPlatformBuildWhenClusterHasImage(c *check.C) {
+	a, _, rollback := s.mock.DefaultReactions(c)
+	defer rollback()
+	a.Deploys = 0
+
+	var appended []string
+	s.mockPlatformImages(c, imagetypes.RegistryVersion{
+		Version:       8,
+		Images:        []string{"home.registry:5000/tsuru/python:v8", "node.registry:5000/tsuru/python:v8"},
+		Containerfile: "FROM tsuru/python:latest",
+	}, &appended)
+
+	var platformBuilds []*buildpb.BuildRequest
+	s.clusterClient.CustomData[buildServiceAddressKey] = setupBuildServer(s.t, platformAwareBuildServer(c, &platformBuilds, "node.registry:5000/tsuru/python:v8"))
+	s.clusterClient.CustomData[registryKey] = "node.registry:5000"
+
+	_, err := s.deployForPlatformTest(c, a)
+	c.Assert(err, check.IsNil)
+	c.Assert(platformBuilds, check.HasLen, 0)
+	c.Assert(appended, check.IsNil)
+}
+
+func (s *S) TestBuild_SkipsPlatformBuildWhenClusterDisablesIt(c *check.C) {
+	a, _, rollback := s.mock.DefaultReactions(c)
+	defer rollback()
+	a.Deploys = 0
+
+	var appended []string
+	s.mockPlatformImages(c, imagetypes.RegistryVersion{
+		Version:       8,
+		Images:        []string{"home.registry:5000/tsuru/python:v8"},
+		Containerfile: "FROM tsuru/python:latest",
+	}, &appended)
+
+	var platformBuilds []*buildpb.BuildRequest
+	s.clusterClient.CustomData[buildServiceAddressKey] = setupBuildServer(s.t, platformAwareBuildServer(c, &platformBuilds, "node.registry:5000/tsuru/python:v8"))
+	s.clusterClient.CustomData[registryKey] = "node.registry:5000"
+	s.clusterClient.CustomData[disablePlatformBuildKey] = "true"
+
+	_, err := s.deployForPlatformTest(c, a)
+	c.Assert(err, check.IsNil)
+	c.Assert(platformBuilds, check.HasLen, 0)
+	c.Assert(appended, check.IsNil)
+}
+
+func (s *S) TestBuild_PlatformVersionLookupErrorFailsDeploy(c *check.C) {
+	a, _, rollback := s.mock.DefaultReactions(c)
+	defer rollback()
+	a.Deploys = 0
+
+	var appended []string
+	s.mockPlatformImages(c, imagetypes.RegistryVersion{Version: 8}, &appended)
+	s.mockService.PlatformImage.OnFindVersion = func(platform string, v int) (*imagetypes.RegistryVersion, error) {
+		return nil, errors.New("storage down")
+	}
+
+	var platformBuilds []*buildpb.BuildRequest
+	s.clusterClient.CustomData[buildServiceAddressKey] = setupBuildServer(s.t, platformAwareBuildServer(c, &platformBuilds, "unused"))
+	s.clusterClient.CustomData[registryKey] = "node.registry:5000"
+
+	_, err := s.deployForPlatformTest(c, a)
+	c.Assert(err, check.ErrorMatches, ".*storage down.*")
+	c.Assert(platformBuilds, check.HasLen, 0)
+	c.Assert(appended, check.IsNil)
+}
+
+func (s *S) TestBuild_DockerfileDeploySkipsPlatformBuild(c *check.C) {
+	a, _, rollback := s.mock.DefaultReactions(c)
+	defer rollback()
+	a.Deploys = 0
+
+	var appended []string
+	s.mockPlatformImages(c, imagetypes.RegistryVersion{
+		Version:       8,
+		Images:        []string{"home.registry:5000/tsuru/python:v8"},
+		Containerfile: "FROM tsuru/python:latest",
+	}, &appended)
+
+	var platformBuilds []*buildpb.BuildRequest
+	s.clusterClient.CustomData[buildServiceAddressKey] = setupBuildServer(s.t, platformAwareBuildServer(c, &platformBuilds, "node.registry:5000/tsuru/python:v8"))
+	s.clusterClient.CustomData[registryKey] = "node.registry:5000"
+
+	_, err := s.deployForPlatformTestWithOpts(c, a, builder.BuildOpts{Dockerfile: "FROM busybox"})
+	c.Assert(err, check.IsNil)
+	c.Assert(platformBuilds, check.HasLen, 0)
+	c.Assert(appended, check.IsNil)
+}
+
+func (s *S) TestBuild_FailedPlatformBuildFailsDeploy(c *check.C) {
+	a, _, rollback := s.mock.DefaultReactions(c)
+	defer rollback()
+	a.Deploys = 0
+
+	var appended []string
+	s.mockPlatformImages(c, imagetypes.RegistryVersion{
+		Version:       8,
+		Images:        []string{"home.registry:5000/tsuru/python:v8"},
+		Containerfile: "FROM tsuru/python:latest",
+	}, &appended)
+
+	s.clusterClient.CustomData[buildServiceAddressKey] = setupBuildServer(s.t, &fakeBuildServer{
+		OnBuild: func(req *buildpb.BuildRequest, stream buildpb.Build_BuildServer) error {
+			return errors.New("boom")
+		},
+	})
+	s.clusterClient.CustomData[registryKey] = "node.registry:5000"
+
+	_, err := s.deployForPlatformTest(c, a)
+	c.Assert(err, check.NotNil)
+	c.Assert(err, check.ErrorMatches, ".*boom.*")
+	c.Assert(appended, check.IsNil)
+}
