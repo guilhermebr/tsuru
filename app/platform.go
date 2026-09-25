@@ -87,6 +87,10 @@ func (s *platformService) Create(ctx context.Context, opts appTypes.PlatformOpti
 		}
 	}
 
+	if multiErr.Len() == 0 && len(imgs) > 0 {
+		recordContainerfile(ctx, opts)
+	}
+
 	return multiErr.ToError()
 }
 
@@ -143,6 +147,10 @@ func (s *platformService) Update(ctx context.Context, opts appTypes.PlatformOpti
 
 		if multiErr.Len() > 0 {
 			return multiErr.ToError()
+		}
+
+		if len(imgs) > 0 {
+			recordContainerfile(ctx, opts)
 		}
 
 		var apps []*appTypes.App
@@ -265,4 +273,15 @@ func (s *platformService) validate(p appTypes.Platform) error {
 		return appTypes.ErrInvalidPlatformName
 	}
 	return nil
+}
+
+// recordContainerfile keeps the Dockerfile a platform version was built from,
+// so the version can be built again into a cluster registered later.
+func recordContainerfile(ctx context.Context, opts appTypes.PlatformOptions) {
+	if len(opts.Data) == 0 {
+		return
+	}
+	if err := servicemanager.PlatformImage.SetContainerfile(ctx, opts.Name, opts.Version, string(opts.Data)); err != nil {
+		log.Errorf("unable to record the build source of platform %q v%d: %s", opts.Name, opts.Version, err)
+	}
 }

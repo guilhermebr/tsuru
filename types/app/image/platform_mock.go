@@ -49,6 +49,8 @@ type MockPlatformImageService struct {
 	OnNewImage            func(ImageRegistry, string, int) (string, error)
 	OnCurrentImage        func(ImageRegistry, string) (string, error)
 	OnAppendImages        func(string, int, []string) error
+	OnSetContainerfile    func(string, int, string) error
+	OnFindVersion         func(string, int) (*RegistryVersion, error)
 	OnDeleteImages        func(string) error
 	OnListImages          func(string) ([]string, error)
 	OnListImagesOrDefault func(string) ([]string, error)
@@ -81,6 +83,20 @@ func (m *MockPlatformImageService) AppendImages(ctx context.Context, platformNam
 		return nil
 	}
 	return m.OnAppendImages(platformName, version, imageID)
+}
+
+func (m *MockPlatformImageService) SetContainerfile(ctx context.Context, platformName string, version int, containerfile string) error {
+	if m.OnSetContainerfile == nil {
+		return nil
+	}
+	return m.OnSetContainerfile(platformName, version, containerfile)
+}
+
+func (m *MockPlatformImageService) FindVersion(ctx context.Context, platformName string, version int) (*RegistryVersion, error) {
+	if m.OnFindVersion == nil {
+		return nil, ErrPlatformImageNotFound
+	}
+	return m.OnFindVersion(platformName, version)
 }
 
 func (m *MockPlatformImageService) DeleteImages(ctx context.Context, platformName string) error {

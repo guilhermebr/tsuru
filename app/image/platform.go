@@ -81,6 +81,31 @@ func (s *platformImageService) AppendImages(ctx context.Context, platformName st
 	return s.storage.Append(ctx, platformName, version, imageIDs)
 }
 
+func (s *platformImageService) SetContainerfile(ctx context.Context, platformName string, version int, containerfile string) error {
+	return s.storage.SetContainerfile(ctx, platformName, version, containerfile)
+}
+
+// FindVersion returns a version of the platform; version 0 means the latest.
+func (s *platformImageService) FindVersion(ctx context.Context, platformName string, version int) (*imageTypes.RegistryVersion, error) {
+	img, err := s.storage.FindByName(ctx, platformName)
+	if err != nil {
+		return nil, err
+	}
+	if len(img.Versions) == 0 {
+		return nil, imageTypes.ErrPlatformImageNotFound
+	}
+	if version == 0 {
+		v := img.Versions[len(img.Versions)-1]
+		return &v, nil
+	}
+	for _, v := range img.Versions {
+		if v.Version == version {
+			return &v, nil
+		}
+	}
+	return nil, imageTypes.ErrPlatformImageNotFound
+}
+
 func (s *platformImageService) DeleteImages(ctx context.Context, platformName string) error {
 	err := s.storage.Delete(ctx, platformName)
 	if err != nil && err != imageTypes.ErrPlatformImageNotFound {
