@@ -267,6 +267,47 @@ func (b *kubernetesBuilder) buildPlatformImage(ctx context.Context, bc buildpb.B
 	return images, nil
 }
 
+// ensurePlatformImage builds the app's platform version into the cluster's
+// registry when the cluster was registered after that version was built.
+func (b *kubernetesBuilder) ensurePlatformImage(ctx context.Context, cc *provisionk8s.ClusterClient, bc buildpb.BuildClient, app *apptypes.App, w io.Writer) error {
+	reg := cc.Registry()
+	if app.Platform == "" || reg == imagetypes.EmptyImageRegistry || !image.UsesPlatformImage(ctx, app) {
+		return nil
+	}
+
+	wanted := image.PlatformVersionNumber(app)
+	version, err := servicemanager.PlatformImage.FindVersion(ctx, app.Platform, wanted)
+	if errors.Is(err, imagetypes.ErrPlatformImageNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, ok := version.ImageForRegistry(reg); ok {
+		return nil
+	}
+	if cc.DisablePlatformBuild() || version.Containerfile == "" {
+		return nil
+	}
+
+	streamfmt.FprintlnSectionf(w, "Building platform %s v%d on cluster %s", app.Platform, version.Version, cc.Name)
+
+	opts := apptypes.PlatformOptions{
+		Name:    app.Platform,
+		Version: version.Version,
+		Data:    []byte(version.Containerfile),
+		Output:  w,
+	}
+	if wanted == 0 {
+		opts.ExtraTags = []string{"latest"}
+	}
+	imgs, err := b.buildPlatformImage(ctx, bc, reg, cc.InsecureRegistry(), opts)
+	if err != nil {
+		return err
+	}
+	return servicemanager.PlatformImage.AppendImages(ctx, app.Platform, version.Version, imgs)
+}
+
 func (b *kubernetesBuilder) buildContainerImage(ctx context.Context, app *apptypes.App, evt *event.Event, opts builder.BuildOpts) (apptypes.AppVersion, error) {
 	w := opts.Output
 	if w == nil {
@@ -288,6 +329,12 @@ func (b *kubernetesBuilder) buildContainerImage(ctx context.Context, app *apptyp
 		return nil, err
 	}
 	defer conn.Close()
+
+	if kindToBuildKind(opts) == buildpb.BuildKind_BUILD_KIND_APP_BUILD_WITH_SOURCE_UPLOAD {
+		if err = b.ensurePlatformImage(ctx, cc, bs, app, w); err != nil {
+			return nil, err
+		}
+	}
 
 	appVersion, err := servicemanager.AppVersion.NewAppVersion(ctx, apptypes.NewVersionArgs{
 		App:         app,

@@ -148,3 +148,10 @@ func (s *S) TestGetBuildImage(c *check.C) {
 		c.Check(img, check.Equals, tt.expectedImage)
 	}
 }
+
+func (s *S) TestPlatformVersionNumber(c *check.C) {
+	c.Assert(image.PlatformVersionNumber(&appTypes.App{}), check.Equals, 0)
+	c.Assert(image.PlatformVersionNumber(&appTypes.App{PlatformVersion: "latest"}), check.Equals, 0)
+	c.Assert(image.PlatformVersionNumber(&appTypes.App{PlatformVersion: "v8"}), check.Equals, 8)
+	c.Assert(image.PlatformVersionNumber(&appTypes.App{PlatformVersion: "8"}), check.Equals, 8)
+}

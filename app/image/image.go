@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/tsuru/config"
@@ -147,14 +148,24 @@ func basicImageName(reg imgTypes.ImageRegistry, repoName string) (string, error)
 // * the deploy number is multiple of 10.
 // in all other cases the app image name will be returned.
 func GetBuildImage(ctx context.Context, app *appTypes.App) (string, error) {
-	if usePlatformImage(app) {
-		return getPlatformImage(ctx, app)
-	}
-	version, err := servicemanager.AppVersion.LatestSuccessfulVersion(ctx, app)
-	if err != nil {
+	version := buildBaseVersion(ctx, app)
+	if version == nil {
 		return getPlatformImage(ctx, app)
 	}
 	return version.VersionInfo().DeployImage, nil
+}
+
+// buildBaseVersion returns the app version the next build starts from, or nil
+// when it starts from the platform image.
+func buildBaseVersion(ctx context.Context, app *appTypes.App) appTypes.AppVersion {
+	if usePlatformImage(app) {
+		return nil
+	}
+	version, err := servicemanager.AppVersion.LatestSuccessfulVersion(ctx, app)
+	if err != nil {
+		return nil
+	}
+	return version
 }
 
 func usePlatformImage(app *appTypes.App) bool {
@@ -184,4 +195,31 @@ func GetPlatformVersion(app *appTypes.App) string {
 		return "latest"
 	}
 	return app.PlatformVersion
+}
+
+// PlatformVersionNumber returns the platform version app is pinned to, or 0
+// when it follows the latest.
+func PlatformVersionNumber(app *appTypes.App) int {
+	v := GetPlatformVersion(app)
+	if v == "latest" {
+		return 0
+	}
+	return platformVersionFromTag(v)
+}
+
+// platformVersionFromTag parses a platform version such as "v8", "8" or
+// "tsuru/python:v8" into its number, or 0 when it has none.
+func platformVersionFromTag(s string) int {
+	_, img, tag := ParseImageParts(s)
+	if tag == "" {
+		tag = img
+	}
+	n, _ := strconv.Atoi(strings.TrimPrefix(tag, "v"))
+	return n
+}
+
+// UsesPlatformImage reports whether the next build of app starts from its
+// platform image, as GetBuildImage decides.
+func UsesPlatformImage(ctx context.Context, app *appTypes.App) bool {
+	return buildBaseVersion(ctx, app) == nil
 }
