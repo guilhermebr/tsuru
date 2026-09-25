@@ -339,3 +339,33 @@ func (s *S) TestPlatformCurrentImageNotFoundLogsDebugNotError(c *check.C) {
 	c.Assert(strings.Contains(buf.String(), "ERROR"), check.Equals, false)
 	c.Assert(strings.Contains(buf.String(), "DEBUG"), check.Equals, true)
 }
+
+func (s *S) TestPlatformFindVersion(c *check.C) {
+	storage := &imageTypes.MockPlatformImageStorage{
+		OnFindByName: func(n string) (*imageTypes.PlatformImage, error) {
+			return &imageTypes.PlatformImage{Name: n, Versions: []imageTypes.RegistryVersion{
+				{Version: 1, Images: []string{"tsuru/myplatform:v1"}},
+				{Version: 2, Images: []string{"tsuru/myplatform:v2"}, Containerfile: "FROM tsuru/myplatform"},
+			}}, nil
+		},
+	}
+	service := &platformImageService{storage: storage}
+
+	v, err := service.FindVersion(context.TODO(), "myplatform", 0)
+	c.Assert(err, check.IsNil)
+	c.Assert(v.Version, check.Equals, 2)
+	c.Assert(v.Containerfile, check.Equals, "FROM tsuru/myplatform")
+
+	v, err = service.FindVersion(context.TODO(), "myplatform", 1)
+	c.Assert(err, check.IsNil)
+	c.Assert(v.Version, check.Equals, 1)
+
+	_, err = service.FindVersion(context.TODO(), "myplatform", 3)
+	c.Assert(err, check.Equals, imageTypes.ErrPlatformImageNotFound)
+
+	storage.OnFindByName = func(string) (*imageTypes.PlatformImage, error) {
+		return &imageTypes.PlatformImage{Name: "myplatform", Count: 1}, nil
+	}
+	_, err = service.FindVersion(context.TODO(), "myplatform", 0)
+	c.Assert(err, check.Equals, imageTypes.ErrPlatformImageNotFound)
+}

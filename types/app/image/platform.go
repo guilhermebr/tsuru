@@ -44,6 +44,8 @@ type PlatformImageService interface {
 	NewImage(context.Context, ImageRegistry, string, int) (string, error)
 	CurrentImage(context.Context, ImageRegistry, string) (string, error)
 	AppendImages(context.Context, string, int, []string) error
+	SetContainerfile(context.Context, string, int, string) error
+	FindVersion(context.Context, string, int) (*RegistryVersion, error)
 	DeleteImages(context.Context, string) error
 	ListImages(context.Context, string) ([]string, error)
 	ListImagesOrDefault(context.Context, string) ([]string, error)
