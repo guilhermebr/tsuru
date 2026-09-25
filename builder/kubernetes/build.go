@@ -22,6 +22,7 @@ import (
 	"github.com/tsuru/tsuru/app/version"
 	"github.com/tsuru/tsuru/builder"
 	"github.com/tsuru/tsuru/event"
+	"github.com/tsuru/tsuru/log"
 	"github.com/tsuru/tsuru/provision"
 	provisionk8s "github.com/tsuru/tsuru/provision/kubernetes"
 	"github.com/tsuru/tsuru/servicemanager"
@@ -286,8 +287,12 @@ func (b *kubernetesBuilder) ensurePlatformImage(ctx context.Context, cc *provisi
 	if _, ok := version.ImageForRegistry(reg); ok {
 		return nil
 	}
-	if cc.DisablePlatformBuild() || version.Containerfile == "" {
+	if cc.DisablePlatformBuild() {
+		log.Debugf("platform %q v%d has no image in registry %s; cluster %s disables platform builds, using the default registry", app.Platform, version.Version, reg, cc.Name)
 		return nil
+	}
+	if version.Containerfile == "" {
+		return fmt.Errorf("platform %q v%d has no image in registry %s and no stored build source; run \"tsuru platform update %s -i <image>\" (or -d <dockerfile>) to record one", app.Platform, version.Version, reg, app.Platform)
 	}
 
 	streamfmt.FprintlnSectionf(w, "Building platform %s v%d on cluster %s", app.Platform, version.Version, cc.Name)

@@ -1926,3 +1926,23 @@ func (s *S) TestBuild_FailedPlatformBuildFailsDeploy(c *check.C) {
 	c.Assert(err, check.ErrorMatches, ".*boom.*")
 	c.Assert(appended, check.IsNil)
 }
+
+func (s *S) TestBuild_FailsWhenPlatformImageMissingAndNoSource(c *check.C) {
+	a, _, rollback := s.mock.DefaultReactions(c)
+	defer rollback()
+	a.Deploys = 0
+
+	var appended []string
+	s.mockPlatformImages(c, imagetypes.RegistryVersion{
+		Version: 8,
+		Images:  []string{"home.registry:5000/tsuru/python:v8"},
+	}, &appended)
+
+	var platformBuilds []*buildpb.BuildRequest
+	s.clusterClient.CustomData[buildServiceAddressKey] = setupBuildServer(s.t, platformAwareBuildServer(c, &platformBuilds, "unused"))
+	s.clusterClient.CustomData[registryKey] = "node.registry:5000"
+
+	_, err := s.deployForPlatformTest(c, a)
+	c.Assert(err, check.ErrorMatches, `platform "python" v8 has no image in registry node\.registry:5000 and no stored build source; run "tsuru platform update python -i <image>" \(or -d <dockerfile>\) to record one`)
+	c.Assert(platformBuilds, check.HasLen, 0)
+}
