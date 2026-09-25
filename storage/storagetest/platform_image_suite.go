@@ -67,6 +67,36 @@ func (s *PlatformImageSuite) TestPlatformImageAppend(c *check.C) {
 	})
 }
 
+func (s *PlatformImageSuite) TestPlatformImageAppendSkipsDuplicates(c *check.C) {
+	p, err := s.PlatformImageStorage.Upsert(context.TODO(), "myplatform")
+	c.Assert(err, check.IsNil)
+	err = s.PlatformImageStorage.Append(context.TODO(), p.Name, 1, []string{"tsuru/myplatform:v1"})
+	c.Assert(err, check.IsNil)
+	err = s.PlatformImageStorage.Append(context.TODO(), p.Name, 1, []string{"reg1.com/tsuru/myplatform:v1", "tsuru/myplatform:v1"})
+	c.Assert(err, check.IsNil)
+	platform, err := s.PlatformImageStorage.FindByName(context.TODO(), p.Name)
+	c.Assert(err, check.IsNil)
+	c.Assert(platform.Versions, check.DeepEquals, []image.RegistryVersion{
+		{Version: 1, Images: []string{"tsuru/myplatform:v1", "reg1.com/tsuru/myplatform:v1"}},
+	})
+}
+
+func (s *PlatformImageSuite) TestPlatformImageSetContainerfile(c *check.C) {
+	p, err := s.PlatformImageStorage.Upsert(context.TODO(), "myplatform")
+	c.Assert(err, check.IsNil)
+	err = s.PlatformImageStorage.Append(context.TODO(), p.Name, 1, []string{"tsuru/myplatform:v1"})
+	c.Assert(err, check.IsNil)
+	err = s.PlatformImageStorage.SetContainerfile(context.TODO(), p.Name, 1, "FROM tsuru/myplatform:latest")
+	c.Assert(err, check.IsNil)
+	platform, err := s.PlatformImageStorage.FindByName(context.TODO(), p.Name)
+	c.Assert(err, check.IsNil)
+	c.Assert(platform.Versions, check.DeepEquals, []image.RegistryVersion{
+		{Version: 1, Images: []string{"tsuru/myplatform:v1"}, Containerfile: "FROM tsuru/myplatform:latest"},
+	})
+	err = s.PlatformImageStorage.SetContainerfile(context.TODO(), p.Name, 2, "FROM tsuru/myplatform:latest")
+	c.Assert(err, check.Equals, image.ErrPlatformImageNotFound)
+}
+
 func (s *PlatformImageSuite) TestDeletePlatform(c *check.C) {
 	platform, err := s.PlatformImageStorage.Upsert(context.TODO(), "static")
 	c.Assert(err, check.IsNil)
