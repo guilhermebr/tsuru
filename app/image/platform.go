@@ -170,12 +170,8 @@ func findImageByRegistry(reg imageTypes.ImageRegistry, imgVersion imageTypes.Reg
 	if len(imgVersion.Images) == 0 {
 		return "", imageTypes.ErrPlatformImageNotFound
 	}
-	if reg != "" {
-		for _, img := range imgVersion.Images {
-			if strings.HasPrefix(img, string(reg)) {
-				return img, nil
-			}
-		}
+	if img, ok := imgVersion.ImageForRegistry(reg); ok {
+		return img, nil
 	}
 	defaultReg, _ := config.GetString("docker:registry")
 	resolve, _ := config.GetBool("docker:resolve-registry-name")
@@ -183,13 +179,21 @@ func findImageByRegistry(reg imageTypes.ImageRegistry, imgVersion imageTypes.Reg
 		var err error
 		defaultReg, err = resolveName(defaultReg)
 		if err != nil {
-			return "", nil
+			return "", err
 		}
 	}
 	for _, img := range imgVersion.Images {
-		if strings.HasPrefix(img, defaultReg) {
-			return img, nil
+		if defaultReg == "" {
+			if imgReg, _, _ := ParseImageParts(img); imgReg != "" {
+				continue
+			}
+		} else if !strings.HasPrefix(img, defaultReg) {
+			continue
 		}
+		if reg != "" {
+			log.Debugf("platform image for registry %q not found, falling back to %q", reg, img)
+		}
+		return img, nil
 	}
 	return "", errors.Errorf("platform image not found for registry %q in %v", reg, imgVersion.Images)
 }

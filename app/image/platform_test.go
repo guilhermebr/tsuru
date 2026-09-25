@@ -154,6 +154,68 @@ func (s *S) TestPlatformCurrentImageWithResolve(c *check.C) {
 	c.Assert(img, check.Equals, "127.0.0.1:3030/tsuru/myplatform:v1")
 }
 
+func (s *S) TestPlatformCurrentImageDoesNotPickAnotherRegistry(c *check.C) {
+	storage := &imageTypes.MockPlatformImageStorage{
+		OnFindByName: func(n string) (*imageTypes.PlatformImage, error) {
+			return &imageTypes.PlatformImage{Name: n, Versions: []imageTypes.RegistryVersion{
+				{Version: 1, Images: []string{"reg1.com/tsuru/myplatform:v1"}},
+			}}, nil
+		},
+	}
+	service := &platformImageService{storage: storage}
+	_, err := service.CurrentImage(context.TODO(), "reg2.com", "myplatform")
+	c.Assert(err, check.ErrorMatches, `platform image not found for registry "reg2.com".*`)
+}
+
+func (s *S) TestPlatformCurrentImageMatchesWholeRegistryHost(c *check.C) {
+	storage := &imageTypes.MockPlatformImageStorage{
+		OnFindByName: func(n string) (*imageTypes.PlatformImage, error) {
+			return &imageTypes.PlatformImage{Name: n, Versions: []imageTypes.RegistryVersion{
+				{Version: 1, Images: []string{"reg1.com.evil/tsuru/myplatform:v1", "reg1.com/tsuru/myplatform:v1"}},
+			}}, nil
+		},
+	}
+	service := &platformImageService{storage: storage}
+	img, err := service.CurrentImage(context.TODO(), "reg1.com", "myplatform")
+	c.Assert(err, check.IsNil)
+	c.Assert(img, check.Equals, "reg1.com/tsuru/myplatform:v1")
+}
+
+func (s *S) TestPlatformImageResolvesToTheClusterRegistry(c *check.C) {
+	storage := &imageTypes.MockPlatformImageStorage{
+		OnFindByName: func(n string) (*imageTypes.PlatformImage, error) {
+			return &imageTypes.PlatformImage{Name: n, Versions: []imageTypes.RegistryVersion{
+				{Version: 8, Images: []string{"y.registry:5000/tsuru/p:v8", "x.registry:5000/tsuru/p:v8"}},
+			}}, nil
+		},
+	}
+	service := &platformImageService{storage: storage}
+	img, err := service.CurrentImage(context.TODO(), "x.registry:5000", "p")
+	c.Assert(err, check.IsNil)
+	c.Assert(img, check.Equals, "x.registry:5000/tsuru/p:v8")
+	img, err = service.FindImage(context.TODO(), "x.registry:5000", "p", "v8")
+	c.Assert(err, check.IsNil)
+	c.Assert(img, check.Equals, "x.registry:5000/tsuru/p:v8")
+}
+
+func (s *S) TestPlatformCurrentImageReturnsResolveError(c *check.C) {
+	storage := &imageTypes.MockPlatformImageStorage{
+		OnFindByName: func(n string) (*imageTypes.PlatformImage, error) {
+			return &imageTypes.PlatformImage{Name: n, Versions: []imageTypes.RegistryVersion{
+				{Version: 1, Images: []string{"reg1.com/tsuru/myplatform:v1"}},
+			}}, nil
+		},
+	}
+	service := &platformImageService{storage: storage}
+	config.Set("docker:registry", "registry.invalid:5000")
+	config.Set("docker:resolve-registry-name", true)
+	defer config.Unset("docker:registry")
+	defer config.Unset("docker:resolve-registry-name")
+	img, err := service.CurrentImage(context.TODO(), "reg2.com", "myplatform")
+	c.Assert(err, check.NotNil)
+	c.Assert(img, check.Equals, "")
+}
+
 func (s *S) TestPlatformListImages(c *check.C) {
 	platformName := "myplatform"
 	storage := &imageTypes.MockPlatformImageStorage{}

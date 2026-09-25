@@ -40,6 +40,7 @@ import (
 	tsuruTest "github.com/tsuru/tsuru/test"
 	"github.com/tsuru/tsuru/tsurutest"
 	appTypes "github.com/tsuru/tsuru/types/app"
+	imageTypes "github.com/tsuru/tsuru/types/app/image"
 	authTypes "github.com/tsuru/tsuru/types/auth"
 	bindTypes "github.com/tsuru/tsuru/types/bind"
 	"github.com/tsuru/tsuru/types/cache"
@@ -5193,6 +5194,11 @@ func (s *S) TestUpdateAppPlatform(c *check.C) {
 }
 
 func (s *S) TestUpdateAppPlatformWithVersion(c *check.C) {
+	s.mockService.PlatformImage.OnFindVersion = func(name string, version int) (*imageTypes.RegistryVersion, error) {
+		c.Check(name, check.Equals, "python")
+		c.Check(version, check.Equals, 3)
+		return &imageTypes.RegistryVersion{Version: 3, Images: []string{"tsuru/python:v3"}}, nil
+	}
 	app := appTypes.App{Name: "example", Platform: "python", TeamOwner: s.team.Name}
 	err := CreateApp(context.TODO(), &app, s.user)
 	c.Assert(err, check.IsNil)
@@ -5204,6 +5210,63 @@ func (s *S) TestUpdateAppPlatformWithVersion(c *check.C) {
 	c.Assert(dbApp.Platform, check.Equals, "python")
 	c.Assert(dbApp.PlatformVersion, check.Equals, "v3")
 	c.Assert(dbApp.UpdatePlatform, check.Equals, true)
+}
+
+// mockPlatformVersionOnlyInAnotherRegistry records python v5 with an image
+// only in y.registry, so the app's registry has none until a deploy builds it.
+func (s *S) mockPlatformVersionOnlyInAnotherRegistry(c *check.C) {
+	s.mockService.PlatformImage.OnFindVersion = func(name string, version int) (*imageTypes.RegistryVersion, error) {
+		if name == "python" && version == 5 {
+			return &imageTypes.RegistryVersion{Version: 5, Images: []string{"y.registry:5000/tsuru/python:v5"}}, nil
+		}
+		return nil, imageTypes.ErrPlatformImageNotFound
+	}
+	s.mockService.PlatformImage.OnFindImage = func(reg imageTypes.ImageRegistry, name, image string) (string, error) {
+		return "", pkgErrors.Errorf("platform image not found for registry %q", reg)
+	}
+}
+
+func (s *S) TestCreateAppPinsPlatformVersionBuiltOnlyForAnotherRegistry(c *check.C) {
+	s.mockPlatformVersionOnlyInAnotherRegistry(c)
+	app := appTypes.App{Name: "example", Platform: "python:v5", TeamOwner: s.team.Name}
+	err := CreateApp(context.TODO(), &app, s.user)
+	c.Assert(err, check.IsNil)
+	dbApp, err := GetByName(context.TODO(), app.Name)
+	c.Assert(err, check.IsNil)
+	c.Assert(dbApp.Platform, check.Equals, "python")
+	c.Assert(dbApp.PlatformVersion, check.Equals, "v5")
+}
+
+func (s *S) TestUpdateAppPinsPlatformVersionBuiltOnlyForAnotherRegistry(c *check.C) {
+	app := appTypes.App{Name: "example", Platform: "python", TeamOwner: s.team.Name}
+	err := CreateApp(context.TODO(), &app, s.user)
+	c.Assert(err, check.IsNil)
+	s.mockPlatformVersionOnlyInAnotherRegistry(c)
+	updateData := appTypes.App{Name: "example", Platform: "python:v5"}
+	err = Update(context.TODO(), &app, UpdateAppArgs{UpdateData: &updateData, Writer: new(bytes.Buffer)})
+	c.Assert(err, check.IsNil)
+	dbApp, err := GetByName(context.TODO(), app.Name)
+	c.Assert(err, check.IsNil)
+	c.Assert(dbApp.PlatformVersion, check.Equals, "v5")
+	c.Assert(dbApp.UpdatePlatform, check.Equals, true)
+}
+
+func (s *S) TestUpdateAppPlatformWithUnknownVersion(c *check.C) {
+	app := appTypes.App{Name: "example", Platform: "python", TeamOwner: s.team.Name}
+	err := CreateApp(context.TODO(), &app, s.user)
+	c.Assert(err, check.IsNil)
+	s.mockPlatformVersionOnlyInAnotherRegistry(c)
+	s.mockService.PlatformImage.OnFindImage = func(reg imageTypes.ImageRegistry, name, image string) (string, error) {
+		return "", imageTypes.ErrPlatformImageNotFound
+	}
+	for _, platform := range []string{"python:v6", "python:vfoo", "python:v0"} {
+		updateData := appTypes.App{Name: "example", Platform: platform}
+		err = Update(context.TODO(), &app, UpdateAppArgs{UpdateData: &updateData, Writer: new(bytes.Buffer)})
+		c.Check(err, check.Equals, imageTypes.ErrPlatformImageNotFound, check.Commentf("platform %s", platform))
+	}
+	dbApp, err := GetByName(context.TODO(), app.Name)
+	c.Assert(err, check.IsNil)
+	c.Assert(dbApp.PlatformVersion, check.Equals, "latest")
 }
 
 func (s *S) TestUpdateTeamOwner(c *check.C) {

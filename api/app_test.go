@@ -1785,11 +1785,10 @@ func (s *S) TestUpdateAppPlatformWithVersion(c *check.C) {
 		Scheme:  permission.PermAppUpdate,
 		Context: permission.Context(permTypes.CtxApp, a.Name),
 	})
-	s.mockService.PlatformImage.OnFindImage = func(reg imgTypes.ImageRegistry, name, image string) (string, error) {
-		c.Assert(reg, check.Equals, imgTypes.ImageRegistry(""))
+	s.mockService.PlatformImage.OnFindVersion = func(name string, version int) (*imgTypes.RegistryVersion, error) {
 		c.Assert(name, check.Equals, "myplatform")
-		c.Assert(image, check.Equals, "v1")
-		return "tsuru/myplatform:v1", nil
+		c.Assert(version, check.Equals, 1)
+		return &imgTypes.RegistryVersion{Version: 1, Images: []string{"tsuru/myplatform:v1"}}, nil
 	}
 	b := strings.NewReader("platform=myplatform:v1")
 	request, err := http.NewRequest("PUT", "/apps/myapp", b)
