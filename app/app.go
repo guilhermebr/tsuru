@@ -656,13 +656,14 @@ func getPlatformNameAndVersion(ctx context.Context, app *appTypes.App, platform 
 	if err != nil {
 		return "", "", err
 	}
-	reg, err := GetRegistry(ctx, app)
-	if err != nil {
-		return "", "", err
-	}
-
 	if version != "latest" {
-		_, err = servicemanager.PlatformImage.FindImage(ctx, reg, p.Name, version)
+		// A deploy builds the version into the app's registry when it is missing
+		// there, so only the version itself has to exist.
+		n := image.PlatformVersionNumber(&appTypes.App{PlatformVersion: version})
+		if n <= 0 {
+			return p.Name, "", imgTypes.ErrPlatformImageNotFound
+		}
+		_, err = servicemanager.PlatformImage.FindVersion(ctx, p.Name, n)
 		if err != nil {
 			return p.Name, "", err
 		}
