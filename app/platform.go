@@ -17,6 +17,7 @@ import (
 	"github.com/tsuru/tsuru/servicemanager"
 	"github.com/tsuru/tsuru/storage"
 	appTypes "github.com/tsuru/tsuru/types/app"
+	imageTypes "github.com/tsuru/tsuru/types/app/image"
 	"github.com/tsuru/tsuru/validation"
 	mongoBSON "go.mongodb.org/mongo-driver/bson"
 )
@@ -123,7 +124,13 @@ func (s *platformService) Update(ctx context.Context, opts appTypes.PlatformOpti
 	}
 
 	if disabled := opts.Args["disabled"]; disabled == "" && len(opts.Data) == 0 {
-		return errors.New("either disabled or dockerfile must be provided")
+		opts.Data, err = storedContainerfile(ctx, opts.Name)
+		if err != nil {
+			return err
+		}
+		if len(opts.Data) == 0 {
+			return errors.New("either disabled or dockerfile must be provided")
+		}
 	}
 
 	if len(opts.Data) > 0 {
@@ -284,4 +291,17 @@ func recordContainerfile(ctx context.Context, opts appTypes.PlatformOptions) {
 	if err := servicemanager.PlatformImage.SetContainerfile(ctx, opts.Name, opts.Version, string(opts.Data)); err != nil {
 		log.Errorf("unable to record the build source of platform %q v%d: %s", opts.Name, opts.Version, err)
 	}
+}
+
+// storedContainerfile returns the Dockerfile the latest version of the
+// platform was built from, or nil when none was recorded.
+func storedContainerfile(ctx context.Context, name string) ([]byte, error) {
+	version, err := servicemanager.PlatformImage.FindVersion(ctx, name, 0)
+	if err == imageTypes.ErrPlatformImageNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []byte(version.Containerfile), nil
 }

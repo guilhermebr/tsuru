@@ -14,6 +14,7 @@ import (
 	registrytest "github.com/tsuru/tsuru/registry/testing"
 	servicemock "github.com/tsuru/tsuru/servicemanager/mock"
 	appTypes "github.com/tsuru/tsuru/types/app"
+	imageTypes "github.com/tsuru/tsuru/types/app/image"
 	"github.com/tsuru/tsuru/types/provision"
 	check "gopkg.in/check.v1"
 )
@@ -445,6 +446,72 @@ func (s *PlatformSuite) TestPlatformUpdate_WithoutDisabledNorDockerfile(c *check
 
 	err := ps.Update(context.TODO(), appTypes.PlatformOptions{Name: "my-plat"})
 	c.Assert(err, check.ErrorMatches, "either disabled or dockerfile must be provided")
+}
+
+func (s *PlatformSuite) TestPlatformUpdate_WithoutDockerfileRebuildsFromStoredSource(c *check.C) {
+	ps := &platformService{
+		storage: &appTypes.MockPlatformStorage{
+			OnFindByName: func(n string) (*appTypes.Platform, error) {
+				return &appTypes.Platform{Name: n}, nil
+			},
+		},
+	}
+	s.mockService.PlatformImage.OnFindVersion = func(name string, version int) (*imageTypes.RegistryVersion, error) {
+		c.Check(name, check.Equals, "my-plat")
+		c.Check(version, check.Equals, 0)
+		return &imageTypes.RegistryVersion{Version: 3, Containerfile: "FROM registry.company.com/tsuru/my-plat"}, nil
+	}
+	var built []byte
+	s.builder.OnPlatformBuild = func(o appTypes.PlatformOptions) ([]string, error) {
+		built = o.Data
+		return []string{"tsuru/my-plat:v1"}, nil
+	}
+	var recorded string
+	s.mockService.PlatformImage.OnSetContainerfile = func(name string, version int, containerfile string) error {
+		recorded = containerfile
+		return nil
+	}
+
+	err := ps.Update(context.TODO(), appTypes.PlatformOptions{Name: "my-plat", Args: map[string]string{"disabled": ""}})
+	c.Assert(err, check.IsNil)
+	c.Assert(string(built), check.Equals, "FROM registry.company.com/tsuru/my-plat")
+	c.Assert(recorded, check.Equals, "FROM registry.company.com/tsuru/my-plat")
+}
+
+func (s *PlatformSuite) TestPlatformUpdate_WithoutDockerfileNorStoredSource(c *check.C) {
+	ps := &platformService{
+		storage: &appTypes.MockPlatformStorage{
+			OnFindByName: func(n string) (*appTypes.Platform, error) {
+				return &appTypes.Platform{Name: n}, nil
+			},
+		},
+	}
+	s.mockService.PlatformImage.OnFindVersion = func(string, int) (*imageTypes.RegistryVersion, error) {
+		return &imageTypes.RegistryVersion{Version: 3}, nil
+	}
+	s.builder.OnPlatformBuild = func(appTypes.PlatformOptions) ([]string, error) {
+		c.Error("platform must not be built without a source")
+		return nil, nil
+	}
+
+	err := ps.Update(context.TODO(), appTypes.PlatformOptions{Name: "my-plat"})
+	c.Assert(err, check.ErrorMatches, "either disabled or dockerfile must be provided")
+}
+
+func (s *PlatformSuite) TestPlatformUpdate_StoredSourceLookupError(c *check.C) {
+	ps := &platformService{
+		storage: &appTypes.MockPlatformStorage{
+			OnFindByName: func(n string) (*appTypes.Platform, error) {
+				return &appTypes.Platform{Name: n}, nil
+			},
+		},
+	}
+	s.mockService.PlatformImage.OnFindVersion = func(string, int) (*imageTypes.RegistryVersion, error) {
+		return nil, errors.New("storage unavailable")
+	}
+
+	err := ps.Update(context.TODO(), appTypes.PlatformOptions{Name: "my-plat"})
+	c.Assert(err, check.ErrorMatches, "storage unavailable")
 }
 
 func (s *PlatformSuite) TestPlatformUpdateWithoutName(c *check.C) {
