@@ -5,6 +5,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/tsuru/tsuru/permission"
 	"github.com/tsuru/tsuru/servicemanager"
 	appTypes "github.com/tsuru/tsuru/types/app"
+	imageTypes "github.com/tsuru/tsuru/types/app/image"
 	eventTypes "github.com/tsuru/tsuru/types/event"
 )
 
@@ -208,6 +210,13 @@ func platformList(w http.ResponseWriter, r *http.Request, t auth.Token) error {
 	if err != nil {
 		return err
 	}
+	if canUsePlat {
+		for i := range platforms {
+			if err = fillPlatformSource(ctx, &platforms[i]); err != nil {
+				return err
+			}
+		}
+	}
 	if len(platforms) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return nil
@@ -238,6 +247,9 @@ func platformInfo(w http.ResponseWriter, r *http.Request, t auth.Token) error {
 		return &tErrors.HTTP{Code: http.StatusNotFound, Message: err.Error()}
 	}
 	if err != nil {
+		return err
+	}
+	if err = fillPlatformSource(ctx, platform); err != nil {
 		return err
 	}
 	images, err := servicemanager.PlatformImage.ListImagesOrDefault(ctx, name)
@@ -320,5 +332,19 @@ func platformRollback(w http.ResponseWriter, r *http.Request, t auth.Token) (err
 		return err
 	}
 	writer.Write([]byte("Platform successfully updated!\n"))
+	return nil
+}
+
+// fillPlatformSource sets the Dockerfile the platform's latest version was
+// built from, when one was recorded.
+func fillPlatformSource(ctx context.Context, p *appTypes.Platform) error {
+	version, err := servicemanager.PlatformImage.FindVersion(ctx, p.Name, 0)
+	if err == imageTypes.ErrPlatformImageNotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	p.Source = version.Containerfile
 	return nil
 }

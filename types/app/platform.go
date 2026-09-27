@@ -12,6 +12,9 @@ import (
 type Platform struct {
 	Name     string
 	Disabled bool
+	// Source is the Dockerfile the latest version was built from. It is
+	// filled by the API for callers allowed to change platforms.
+	Source string `json:",omitempty"`
 }
 
 type PlatformOptions struct {
