@@ -26,6 +26,7 @@ import (
 	"github.com/tsuru/tsuru/provision"
 	servicemock "github.com/tsuru/tsuru/servicemanager/mock"
 	appTypes "github.com/tsuru/tsuru/types/app"
+	imageTypes "github.com/tsuru/tsuru/types/app/image"
 	eventTypes "github.com/tsuru/tsuru/types/event"
 	permTypes "github.com/tsuru/tsuru/types/permission"
 	"github.com/tsuru/tsuru/types/quota"
@@ -356,6 +357,57 @@ func (s *PlatformSuite) TestPlatformList(c *check.C) {
 	c.Assert(got, check.DeepEquals, platforms)
 }
 
+func (s *PlatformSuite) TestPlatformListWithSource(c *check.C) {
+	s.mockService.Platform.OnList = func(enabledOnly bool) ([]appTypes.Platform, error) {
+		return []appTypes.Platform{{Name: "java"}, {Name: "static"}}, nil
+	}
+	s.mockService.PlatformImage.OnFindVersion = func(name string, version int) (*imageTypes.RegistryVersion, error) {
+		c.Check(version, check.Equals, 0)
+		if name == "java" {
+			return &imageTypes.RegistryVersion{Version: 2, Containerfile: "FROM registry.company.com/tsuru/java"}, nil
+		}
+		return nil, imageTypes.ErrPlatformImageNotFound
+	}
+	request, err := http.NewRequest("GET", "/platforms", nil)
+	c.Assert(err, check.IsNil)
+	token := createToken(c)
+	request.Header.Set("Authorization", "b "+token.GetValue())
+	recorder := httptest.NewRecorder()
+	s.testServer.ServeHTTP(recorder, request)
+	c.Assert(recorder.Code, check.Equals, http.StatusOK)
+	var got []appTypes.Platform
+	err = json.NewDecoder(recorder.Body).Decode(&got)
+	c.Assert(err, check.IsNil)
+	c.Assert(got, check.DeepEquals, []appTypes.Platform{
+		{Name: "java", Source: "FROM registry.company.com/tsuru/java"},
+		{Name: "static"},
+	})
+}
+
+func (s *PlatformSuite) TestPlatformListHidesSourceFromUsers(c *check.C) {
+	s.mockService.Platform.OnList = func(enabledOnly bool) ([]appTypes.Platform, error) {
+		return []appTypes.Platform{{Name: "java"}}, nil
+	}
+	s.mockService.PlatformImage.OnFindVersion = func(string, int) (*imageTypes.RegistryVersion, error) {
+		c.Error("an unprivileged listing must not look up platform sources")
+		return nil, imageTypes.ErrPlatformImageNotFound
+	}
+	request, err := http.NewRequest("GET", "/platforms", nil)
+	c.Assert(err, check.IsNil)
+	token := userWithPermission(c, permTypes.Permission{
+		Scheme:  permission.PermAppRead,
+		Context: permission.Context(permTypes.CtxGlobal, ""),
+	})
+	request.Header.Set("Authorization", "b "+token.GetValue())
+	recorder := httptest.NewRecorder()
+	s.testServer.ServeHTTP(recorder, request)
+	c.Assert(recorder.Code, check.Equals, http.StatusOK)
+	var got []appTypes.Platform
+	err = json.NewDecoder(recorder.Body).Decode(&got)
+	c.Assert(err, check.IsNil)
+	c.Assert(got, check.DeepEquals, []appTypes.Platform{{Name: "java"}})
+}
+
 func (s *PlatformSuite) TestPlatformListGetOnlyEnabledPlatforms(c *check.C) {
 	platforms := []appTypes.Platform{
 		{Name: "python"},
@@ -421,6 +473,31 @@ func (s *PlatformSuite) TestPlatformInfo(c *check.C) {
 	err = json.NewDecoder(recorder.Body).Decode(&got)
 	c.Assert(err, check.IsNil)
 	c.Assert(got, check.DeepEquals, expected)
+}
+
+func (s *PlatformSuite) TestPlatformInfoWithSource(c *check.C) {
+	s.mockService.Platform.OnFindByName = func(name string) (*appTypes.Platform, error) {
+		return &appTypes.Platform{Name: name}, nil
+	}
+	s.mockService.PlatformImage.OnListImagesOrDefault = func(name string) ([]string, error) {
+		return []string{"tsuru/myplatform:v1"}, nil
+	}
+	s.mockService.PlatformImage.OnFindVersion = func(name string, version int) (*imageTypes.RegistryVersion, error) {
+		return &imageTypes.RegistryVersion{Version: 1, Containerfile: "FROM tsuru/myplatform"}, nil
+	}
+	request, err := http.NewRequest("GET", "/platforms/myplatform", nil)
+	c.Assert(err, check.IsNil)
+	token := createToken(c)
+	request.Header.Set("Authorization", "b "+token.GetValue())
+	recorder := httptest.NewRecorder()
+	s.testServer.ServeHTTP(recorder, request)
+	c.Assert(recorder.Code, check.Equals, http.StatusOK)
+	var got struct {
+		Platform appTypes.Platform
+	}
+	err = json.NewDecoder(recorder.Body).Decode(&got)
+	c.Assert(err, check.IsNil)
+	c.Assert(got.Platform, check.DeepEquals, appTypes.Platform{Name: "myplatform", Source: "FROM tsuru/myplatform"})
 }
 
 func (s *PlatformSuite) TestPlatformInfoDefaultImage(c *check.C) {

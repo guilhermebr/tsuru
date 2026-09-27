@@ -22,6 +22,7 @@ type PlatformStorage struct{}
 type platform struct {
 	Name     string `bson:"_id"`
 	Disabled bool   `bson:",omitempty"`
+	Source   string `bson:"-"`
 }
 
 func (s *PlatformStorage) Insert(ctx context.Context, p app.Platform) error {
